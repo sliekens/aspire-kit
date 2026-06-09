@@ -1,0 +1,12 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.4.0">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <UserSecretsId>4ff4e67f-7c50-4d8d-91fc-db79777ecd2b</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\CommunityToolkit.Aspire.Hosting.GlitchTip\CommunityToolkit.Aspire.Hosting.GlitchTip.csproj" IsAspireProjectResource="false" />
+  </ItemGroup>
+
+</Project>
