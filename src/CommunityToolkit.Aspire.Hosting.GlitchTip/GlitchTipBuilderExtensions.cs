@@ -25,7 +25,7 @@ public static class GlitchTipBuilderExtensions
     /// <param name="builder">The <see cref="IDistributedApplicationBuilder"/>.</param>
     /// <param name="name">The name of the resource. This name will be used as the connection string name when referenced in a dependency.</param>
     /// <param name="adminEmail">The parameter used as the bootstrap admin email and provisioner credentials.</param>
-    /// <param name="adminPassword">The parameter used as the bootstrap admin password and provisioner credentials.</param>
+    /// <param name="adminPassword">The parameter used as the bootstrap admin password and provisioner credentials. Minimum length is 8 characters.</param>
     /// <param name="secretKey">The parameter used as the <c>SECRET_KEY</c> environment variable. A random value is generated when not specified.</param>
     /// <param name="orgName">The parameter used as the organization name provisioned by the package. Defaults to the resource name.</param>
     /// <param name="projectName">The parameter used as the project name provisioned by the package. Defaults to the resource name.</param>
