@@ -19,8 +19,10 @@ internal sealed class GlitchTipApiClient(string baseUrl, string bearerToken, ILo
 {
     // IHttpClientFactory is not used here: this client is constructed once per provisioning run
     // (a one-shot startup operation), so socket exhaustion and handler lifetime are non-issues.
-    private readonly HttpClient _http = new();
-    private readonly string _base = baseUrl.TrimEnd('/');
+    private readonly HttpClient _http = new()
+    {
+        BaseAddress = new Uri(baseUrl.TrimEnd('/'))
+    };
 
     /// <summary>
     /// Ensures an organization with the given slug exists, creating it if necessary.
@@ -118,8 +120,15 @@ internal sealed class GlitchTipApiClient(string baseUrl, string bearerToken, ILo
 
             var json = await resp.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.GetArrayLength() == 0)
+            {
+                break;
+            }
+
             foreach (var item in doc.RootElement.EnumerateArray())
+            {
                 results.Add(item.Clone());
+            }
 
             path = GetNextLink(resp);
         }
@@ -158,7 +167,7 @@ internal sealed class GlitchTipApiClient(string baseUrl, string bearerToken, ILo
     private async Task<HttpResponseMessage> SendAsync(
         HttpMethod method, string path, object? body = null, CancellationToken ct = default)
     {
-        var req = new HttpRequestMessage(method, _base + path);
+        var req = new HttpRequestMessage(method, path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearerToken);
         if (body is not null) req.Content = JsonContent.Create(body);
         return await _http.SendAsync(req, ct);
