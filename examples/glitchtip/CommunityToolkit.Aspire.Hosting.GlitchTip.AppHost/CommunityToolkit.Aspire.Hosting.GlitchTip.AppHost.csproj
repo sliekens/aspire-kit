@@ -6,6 +6,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../CommunityToolkit.Aspire.Hosting.GlitchTip.ApiService/CommunityToolkit.Aspire.Hosting.GlitchTip.ApiService.csproj" />
+    <ProjectReference Include="../CommunityToolkit.Aspire.Hosting.GlitchTip.Web/CommunityToolkit.Aspire.Hosting.GlitchTip.Web.csproj" />
     <ProjectReference Include="..\..\..\src\CommunityToolkit.Aspire.Hosting.GlitchTip\CommunityToolkit.Aspire.Hosting.GlitchTip.csproj" IsAspireProjectResource="false" />
   </ItemGroup>
 

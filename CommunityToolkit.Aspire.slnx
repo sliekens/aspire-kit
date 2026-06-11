@@ -55,7 +55,10 @@
     <Project Path="examples/goff/CommunityToolkit.Aspire.Hosting.GoFeatureFlag.ServiceDefaults/CommunityToolkit.Aspire.Hosting.GoFeatureFlag.ServiceDefaults.csproj" />
   </Folder>
   <Folder Name="/examples/glitchtip/">
+    <Project Path="examples/glitchtip/CommunityToolkit.Aspire.Hosting.GlitchTip.ApiService/CommunityToolkit.Aspire.Hosting.GlitchTip.ApiService.csproj" />
     <Project Path="examples/glitchtip/CommunityToolkit.Aspire.Hosting.GlitchTip.AppHost/CommunityToolkit.Aspire.Hosting.GlitchTip.AppHost.csproj" />
+    <Project Path="examples/glitchtip/CommunityToolkit.Aspire.Hosting.GlitchTip.ServiceDefaults/CommunityToolkit.Aspire.Hosting.GlitchTip.ServiceDefaults.csproj" />
+    <Project Path="examples/glitchtip/CommunityToolkit.Aspire.Hosting.GlitchTip.Web/CommunityToolkit.Aspire.Hosting.GlitchTip.Web.csproj" />
   </Folder>
   <Folder Name="/examples/java/">
     <Project Path="examples/java/CommunityToolkit.Aspire.Hosting.Java.ApiApp/CommunityToolkit.Aspire.Hosting.Java.ApiApp.csproj" />

@@ -1,7 +1,8 @@
+using Projects;
+
 var builder = DistributedApplication.CreateBuilder(args);
 
 var postgres = builder.AddPostgres("postgres")
-    .WithDataVolume()
     .AddDatabase("glitchtip-db");
 
 var redis = builder.AddRedis("redis");
@@ -14,5 +15,18 @@ var glitchtip = builder.AddGlitchTip("glitchtip", adminEmail, adminPassword)
     .WithRedis(redis)
     .WithExternalHttpEndpoints()
     .WithDeployTimeProvisioning();
+
+var apiService = builder.AddProject<CommunityToolkit_Aspire_Hosting_GlitchTip_ApiService>("apiservice")
+    .WithHttpHealthCheck("/health")
+    .WithReference(glitchtip)
+    .WaitFor(glitchtip);
+
+var web = builder.AddProject<CommunityToolkit_Aspire_Hosting_GlitchTip_Web>("web")
+    .WithExternalHttpEndpoints()
+    .WithHttpHealthCheck("/health")
+    .WithReference(apiService)
+    .WaitFor(apiService)
+    .WithReference(glitchtip)
+    .WaitFor(glitchtip);
 
 builder.Build().Run();
