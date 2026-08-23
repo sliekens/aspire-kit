@@ -10,6 +10,7 @@
     <PackageVersion Include="Aspire.Hosting.Azure.AppContainers" Version="$(AspireVersion)" />
     <PackageVersion Include="Aspire.Hosting.Azure.Redis" Version="$(AspireVersion)" />
     <!-- Aspire.Hosting.Elasticsearch doesn't currently ship a 13.4 package. -->
+    <PackageVersion Include="Aspire.Hosting.Docker" Version="13.4.3" />
     <PackageVersion Include="Aspire.Hosting.Elasticsearch" Version="13.3.0" />
     <PackageVersion Include="Aspire.Hosting.Keycloak" Version="$(AspireVersion)$(AspirePreviewSuffix)" />
     <PackageVersion Include="Aspire.Keycloak.Authentication" Version="$(AspireVersion)$(AspirePreviewSuffix)" />

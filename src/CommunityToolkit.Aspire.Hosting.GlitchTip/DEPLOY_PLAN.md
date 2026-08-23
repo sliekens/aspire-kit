@@ -2,259 +2,177 @@
 
 ## Goal
 
-The provisioner becomes a proper Aspire resource that works identically in run mode and any deployment target. Consuming services call `WaitForCompletion` on it and receive the DSN on first run with no hacks, no workarounds, and no stack-specific assumptions in the core model.
+Deploy-mode support that is **compute-environment agnostic**: the GlitchTip connection string flows to consumers through standard Aspire parameters on every publisher (Docker Compose, Kubernetes, …), with no publisher-specific artifact manipulation. Provisioning values are supplied either manually (baseline) or by an optional post-deploy pipeline step that persists them to deployment state (auto-convergence on the next deploy).
+
+Run mode is unchanged: `ResourceReadyEvent` → in-process provisioner → `DsnKey`/`ProjectId` on the resource, with `WaitFor(glitchtip)` guaranteeing availability.
+
+See `deploy-design.md` for the analysis and `aspire-issue-draft.md` for the upstream feature request covering the underlying platform gap (single-deploy convergence is impossible today).
 
 ---
 
 ## High-level design
 
 ```
-                  ┌──────────────────────────────────────────────────────────────────────────┐
-                  │  Aspire AppHost                                                          │
-                  │                                                                          │
-                  │  builder.AddGlitchTip(...)                                               │
-                  │         │                                                                │
-                  │         ├──► GlitchTipResource (server container)                        │
-                  │         │         │  WaitFor ←── GlitchTipProvisionerResource            │
-                  │         │         │              (job container)                         │
-                  │         │         │                │                                     │
-                  │         │         │                │ stdout: ASPIRE_GLITCHTIP_DSN=key/id │
-                  │         │         │                │                                     │
-                  │         │         │           ResourceLoggerService.WatchAsync           │
-                  │         │         │                │                                     │
-                  │         │         │           DsnTcs.TrySetResult(dsn)                   │
-                  │         │         │                                                      │
-                  │         └──► ConnectionStringExpression                                  │
-                  │                   └── awaits DsnTcs before returning DSN                 │
-                  │                                                                          │
-                  │  App services:                                                           │
-                  │    .WithReference(glitchtip)          ← binds to DSN                     │
-                  │    .WaitForCompletion(glitchtip.Resource.Provisioner)                    │
-                  │       ↓                                                                  │
-                  │    starts only after provisioner exits 0                                 │
-                  └──────────────────────────────────────────────────────────────────────────┘
-
-  Run mode:    DCP runs both containers; log watcher sets DsnTcs; app gets DSN.
-  Deploy mode: Job container runs inside target network; app waits via platform
-               dependency mechanism; DSN propagation is target-specific (see below).
+ aspire deploy (any compute environment)
+ ─────────────────────────────────────────────────────────────────────────────
+ process-parameters       {name}-dsn-key / {name}-project-id resolve from
+        │                 Parameters:{name}-* config (deployment state),
+        │                 fall back to "" — never prompt on CI
+        │
+ publish / prepare        publisher materializes the parameters natively:
+        │                   compose → ${GLITCHTIP_DSN_KEY} + .env.{env}
+        │                   k8s     → values.yaml / Secret
+        │
+ <compute deploy step>    services start; first deploy: DSN incomplete →
+        │                 client package disables Sentry (no crash)
+        │
+ provision-glitchtip-{name}   [optional step — option B]
+        │                 ① poll {provision-url}/api/0/ until 200 (timeout ~5 min)
+        │                 ② HTTP from CI: auth, ensure org/team/project, fetch DSN
+        │                 ③ save Parameters:{name}-dsn-key / -project-id
+        │                    to deployment state (IDeploymentStateManager)
+        ▼
+ deploy complete          next `aspire deploy`: state → config → parameters
+                          resolve up front → consumers get the real DSN
+ ─────────────────────────────────────────────────────────────────────────────
 ```
 
----
-
-## Comparison with `EFMigrationResource`
-
-`EFMigrationResource` is the closest existing pattern and directly informs this design. The critical difference:
-
-|                              | `EFMigrationResource`                                           | `GlitchTipProvisionerResource`                        |
-| ---------------------------- | --------------------------------------------------------------- | ----------------------------------------------------- |
-| Base class                   | `ContainerResource`                                             | `ContainerResource`                                   |
-| Run mode                     | `BeforeStartEvent` → local process via `ResourceCommandService` | Container in DCP; log watcher on host                 |
-| Deploy mode                  | Pipeline step builds + runs migration bundle container          | Job container in target platform                      |
-| Output to consuming services | **None** — only signals "done"                                  | **DSN string** — must reach consuming containers' env |
-| Consumers call               | `WaitFor(migration)`                                            | `WaitForCompletion(glitchtip.Resource.Provisioner)`   |
-
-**The unsolved problem**: EF migrations do not need to pass any value to the services that wait for them — the database connection string was already known at configuration time. The GlitchTip provisioner must produce a DSN (`http://<key>@<host>:<port>/<id>`) that is unknown until the provisioner runs. This value must reach consuming containers as a connection string. That propagation path differs per deployment target and is the core design challenge this plan addresses.
-
----
-
-## New resource: `GlitchTipProvisionerResource`
-
-```csharp
-public sealed class GlitchTipProvisionerResource(string name, GlitchTipResource glitchTip)
-    : ContainerResource(name)
-{
-    public GlitchTipResource GlitchTip { get; } = glitchTip;
-
-    // Completed by the host-side log watcher when it parses the DSN from stdout.
-    internal TaskCompletionSource<string> DsnTcs { get; } =
-        new(TaskCreationOptions.RunContinuationsAsynchronously);
-}
-```
-
-`ContainerResource` already implements `IResourceWithWaitSupport`, so `WaitForCompletion` works with no extra interfaces.
-
----
-
-## New console app: `CommunityToolkit.Aspire.Hosting.GlitchTip.Provisioner`
-
-A standalone, self-contained .NET console app. In run mode DCP runs it as a container; in deploy mode it is the job container image.
-
-### Entry point
-
-```csharp
-// Program.cs
-var url      = Env("GLITCHTIP_URL");
-var email    = Env("GLITCHTIP_ADMIN_EMAIL");
-var password = Env("GLITCHTIP_ADMIN_PASSWORD");
-var org      = Env("GLITCHTIP_ORG");
-var project  = Env("GLITCHTIP_PROJECT");
-
-var (dsnKey, projectId) = await GlitchTipProvisioner.ProvisionAsync(url, email, password, org, project);
-
-// Structured marker that the Aspire host log watcher looks for.
-Console.WriteLine($"ASPIRE_GLITCHTIP_DSN={dsnKey}/{projectId}");
-```
-
-### Container image
-
-The image tag constants live in `GlitchTipProvisionerContainerImageTags` (image name, tag). The registry is **not hardcoded** — it is inherited from whatever registry the user has already configured on the application builder (same convention used by all other integrations in this toolkit).
+No artifact is ever patched; no deploy step is re-run. The step writes only to deployment state — the single compute-agnostic channel.
 
 ---
 
 ## Changes to `GlitchTipResource`
 
-Add a `Provisioner` property and update `ConnectionStringExpression` to block until the DSN is ready:
+Internal publish-mode parameter slots; connection string branches on their presence:
 
 ```csharp
-internal GlitchTipProvisionerResource? Provisioner { get; set; }
+internal ParameterResource? DsnKeyParameter { get; set; }      // publish mode only
+internal ParameterResource? ProjectIdParameter { get; set; }   // publish mode only
 
 public ReferenceExpression ConnectionStringExpression =>
-    ReferenceExpression.Create($"{new GlitchTipConnectionStringReference(this)}");
+    DsnKeyParameter is not null && ProjectIdParameter is not null
+        ? ReferenceExpression.Create(
+            $"{PrimaryEndpoint.Property(EndpointProperty.Scheme)}://{DsnKeyParameter}@{PrimaryEndpoint.Property(EndpointProperty.Host)}:{PrimaryEndpoint.Property(EndpointProperty.Port)}/{ProjectIdParameter}")
+        : /* run mode: existing string-based expression (DsnKey / ProjectId) */;
 ```
 
-`GlitchTipConnectionStringReference.GetValueAsync`:
-
-```csharp
-public async ValueTask<string?> GetValueAsync(CancellationToken ct)
-{
-    if (Resource.Provisioner is { } p)
-        await p.DsnTcs.Task.WaitAsync(ct);
-    return $"{Resource.PrimaryEndpoint.Scheme}://{Resource.DsnKey}@"
-         + $"{Resource.PrimaryEndpoint.Host}:{Resource.PrimaryEndpoint.Port}/{Resource.ProjectId}";
-}
-```
+Each publisher resolves the endpoint parts and parameters with its own conventions — compose yields `http://${GLITCHTIP_DSN_KEY}@glitchtip:8000/${GLITCHTIP_PROJECT_ID}`, Kubernetes the equivalent via values.yaml. The toolkit never needs to know which.
 
 ---
 
-## Changes to `AddGlitchTip`
+## Changes to `GlitchTipProvisioner`
 
-### Remove
-
-The `ResourceReadyEvent` subscription. The provisioner container replaces it in both modes.
-
-### Add
-
-After building `resourceBuilder`:
+Extract a transport-only core shared by run mode and the deploy step:
 
 ```csharp
-var provisionerResource = new GlitchTipProvisionerResource($"{name}-provisioner", resource);
-resource.Provisioner = provisionerResource;
-
-builder.AddResource(provisionerResource)
-    .WithImage(GlitchTipProvisionerContainerImageTags.Image, GlitchTipProvisionerContainerImageTags.Tag)
-    .WithEnvironment("GLITCHTIP_URL", resource.PrimaryEndpoint)
-    .WithEnvironment("GLITCHTIP_ADMIN_EMAIL", adminEmailParam)
-    .WithEnvironment("GLITCHTIP_ADMIN_PASSWORD", adminPasswordParam)
-    .WithEnvironment("GLITCHTIP_ORG", orgNameParam)
-    .WithEnvironment("GLITCHTIP_PROJECT", projectNameParam)
-    .WaitFor(resourceBuilder);  // provisioner starts only after GlitchTip is healthy
-
-// Watch provisioner stdout; complete DsnTcs when the marker line arrives.
-builder.Eventing.Subscribe<AfterResourcesCreatedEvent>((evt, ct) =>
-{
-    var logs = evt.Services.GetRequiredService<ResourceLoggerService>();
-    var notifications = evt.Services.GetRequiredService<ResourceNotificationService>();
-    _ = WatchProvisionerLogsAsync(provisionerResource, logs, notifications, ct);
-    return Task.CompletedTask;
-});
+internal static async Task<(string DsnKey, string ProjectId)> ProvisionAsync(
+    string baseUrl, string email, string password,
+    string orgName, string projectName,
+    ILogger logger, CancellationToken ct)
 ```
 
-### Log watcher
+The run-mode entry point becomes a wrapper resolving endpoint/parameters and assigning the resource properties. `GlitchTipAuthClient`/`GlitchTipApiClient` unchanged.
+
+---
+
+## Changes to `AddGlitchTip` (publish mode only)
 
 ```csharp
-private static async Task WatchProvisionerLogsAsync(
-    GlitchTipProvisionerResource provisioner,
-    ResourceLoggerService loggerService,
-    ResourceNotificationService notificationService,
-    CancellationToken ct)
+if (builder.ExecutionContext.IsPublishMode)
 {
-    const string Marker = "ASPIRE_GLITCHTIP_DSN=";
+    // Deployment state loads into configuration at startup, so Parameters:{name}-*
+    // resolves automatically once provisioned. Empty fallback ⇒ never prompts.
+    var dsnKeyParam = builder.AddParameter($"{name}-dsn-key",
+        () => builder.Configuration[$"Parameters:{name}-dsn-key"] ?? "", secret: true).Resource;
+    var projectIdParam = builder.AddParameter($"{name}-project-id",
+        () => builder.Configuration[$"Parameters:{name}-project-id"] ?? "").Resource;
+    resource.DsnKeyParameter = dsnKeyParam;
+    resource.ProjectIdParameter = projectIdParam;
+}
+```
 
-    await foreach (var batch in loggerService.WatchAsync(provisioner).WithCancellation(ct))
+This alone delivers the **manual baseline (option A)**: provision GlitchTip once by hand, set `Parameters__glitchtip-dsn-key` / `Parameters__glitchtip-project-id` in CI configuration, deploy.
+
+### Optional automatic provisioning (option B)
+
+```csharp
+    var provisionUrlParam = builder.AddParameter($"{name}-provision-url",
+        () => builder.Configuration[$"Parameters:{name}-provision-url"] ?? "").Resource;
+
+    resourceBuilder.WithPipelineStepFactory(
+        $"provision-glitchtip-{name}",
+        ctx => GlitchTipDeployStep.ExecuteAsync(ctx, resource, provisionUrlParam),
+        dependsOn: [WellKnownPipelineSteps.DeployPrereq],
+        requiredBy: [WellKnownPipelineSteps.Deploy]);
+
+    // Best-effort ordering after known compute deploy steps; the step's readiness
+    // polling makes ordering a nicety, not a correctness requirement.
+    resourceBuilder.WithPipelineConfiguration(ctx =>
     {
-        foreach (var line in batch.SelectMany(b => b))
+        var step = ctx.Steps.FirstOrDefault(s => s.Name == $"provision-glitchtip-{name}");
+        if (step is null) return;
+        foreach (var env in ctx.Model.Resources.OfType<IComputeEnvironmentResource>())
         {
-            if (!line.Content.StartsWith(Marker, StringComparison.Ordinal)) continue;
-
-            var value = line.Content[Marker.Length..];   // "dsnKey/projectId"
-            var slash = value.LastIndexOf('/');
-            if (slash < 0) continue;
-
-            provisioner.GlitchTip.DsnKey    = value[..slash];
-            provisioner.GlitchTip.ProjectId = value[(slash + 1)..];
-            provisioner.DsnTcs.TrySetResult(value);
-            return;
+            foreach (var candidate in new[] { $"docker-compose-up-{env.Name}", $"helm-deploy-{env.Name}" })
+            {
+                if (ctx.Steps.Any(s => s.Name == candidate))
+                    step.DependsOn(candidate);   // guarded: unknown names throw
+            }
         }
-    }
-}
+    });
 ```
+
+Decision pending (open question 2 in the design doc): always-on vs. opt-in via a `WithDeployTimeProvisioning()` extension. Plan assumes opt-in to keep option A users free of the polling timeout.
+
+Pragmas: `ASPIREPIPELINES001` for all pipeline APIs, `ASPIREPIPELINES002` for `IDeploymentStateManager`.
 
 ---
 
-## AppHost usage
+## New file: `GlitchTipDeployStep.cs`
 
-`WaitForCompletion` on the provisioner is **explicit** — not automatic. The user opts in:
+1. **Resolve inputs** via `GetValueAsync`: admin email/password, org/project names, provision URL. URL resolution: `{name}-provision-url` if non-empty; else `http://localhost:{port}` when an explicit host port was given to `AddGlitchTip`; else fail fast naming both remedies.
+2. **Readiness poll**: `GET {url}/api/0/` until 200, ~5-minute timeout (first boot runs migrations), progress via `ctx.Logger`.
+3. **Provision**: `GlitchTipProvisioner.ProvisionAsync(...)` → `(dsnKey, projectId)`; ensure-style calls are idempotent.
+4. **Persist**: write to deployment state sections `Parameters:{name}-dsn-key` / `Parameters:{name}-project-id` (`AcquireSectionAsync` → `SetValue` → `SaveSectionAsync` — on the manager, not the section). Skip the save when values are unchanged.
+5. **Report**: `ctx.Summary.Add("GlitchTip", ...)` — org/project names only, never the key (secret). When values were newly written, log clearly: *“DSN provisioned and saved; run `aspire deploy` again (or restart consumers) to apply it.”*
 
-```csharp
-var glitchtip = builder.AddGlitchTip("glitchtip", adminEmail, adminPassword)
-    .WithPostgres(postgres)
-    .WithRedis(redis);
-
-builder.AddProject<Projects.Api>("api")
-    .WithReference(glitchtip)
-    .WaitForCompletion(glitchtip.Resource.Provisioner);
-```
-
-`glitchtip.Resource.Provisioner` is a property on `GlitchTipResource`. No separate builder type or extension method.
+Failures throw → pipeline fails with the step's message; re-running is safe.
 
 ---
 
-## Deploy-mode DSN propagation
+## Changes to `CommunityToolkit.Aspire.GlitchTip` (client package)
 
-`WaitForCompletion` translates to the target platform's job-completion dependency:
+Map a DSN without key/project-id (`http://@glitchtip:8000/`) to an empty `Sentry:Dsn` so the SDK is disabled rather than throwing in `SentrySdk.Init`. Required for the first-deploy window in both options A and B.
 
-- Docker Compose → `depends_on: {provisioner}: condition: service_completed_successfully`
-- Kubernetes → init container or Job dependency
-- Azure Container Apps → ACA Job dependency
+---
 
-The dependency ordering is handled automatically by the platform translator. What is **not** automatic is making the DSN value available to consuming containers as an env var — that value is only known after the provisioner runs.
+## Explicitly out of scope / removed
 
-### The problem
-
-At deploy time, connection strings are written to static configuration (env files, manifests, secrets) before containers start. The GlitchTip DSN is unknown at that point and only becomes known when the provisioner job runs inside the target network. No stack-agnostic native mechanism exists for a job container to write output values that sibling containers then receive as env vars.
-
-### Avenues
-
-**IDeploymentStateManager (re-deploy pattern)**: A pipeline step runs after the deployment, reads the provisioner's log output (e.g. via the platform's log API), saves the DSN to `IDeploymentStateManager`. On next deploy the DSN is in state and is written to static config. First deploy: app containers start without DSN. Documented known limitation.
-
-**IPipelineOutputService / shared output path**: An avenue to investigate. The pipeline has a known output directory per environment. If the provisioner container can write to a bind-mounted path from that directory, and the platform publisher can wire consuming services to read from it at container-start time (e.g., Docker Compose `env_file` is evaluated at start time, after `service_completed_successfully` is met), single-deploy provisioning would be possible. Feasibility depends on whether the output path is accessible inside the target container network and whether the platform supports this pattern natively.
-
-**Platform-native job outputs**: Kubernetes ConfigMaps written by Jobs, ACA Job environment outputs. These are target-specific but clean. Implement per publisher as follow-up.
-
-**Recommendation for v1**: Implement the re-deploy pattern with clear documentation. Pursue the IPipelineOutputService avenue and platform-native options in follow-up work.
+- ~~Env-file patching + second `ComposeUpAsync`~~ — compose-specific; violates the agnostic requirement.
+- ~~Provisioner sidecar/job container, image publishing, stdout log-marker watching, `WaitForCompletion` contract~~ — removed with the CI-side HTTP model.
+- Single-deploy convergence — impossible today without publisher-specific hacks; tracked upstream (`aspire-issue-draft.md`). When Aspire grows a deferred-value mechanism, option B's step becomes its natural producer.
+- If option B is dropped entirely (acceptable fallback), everything above minus the step still ships: run-mode auto-provisioning + manual deploy-mode parameters.
 
 ---
 
 ## Files affected
 
-| File                                                     | Change                                                                            |
-| -------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| `GlitchTipResource.cs`                                   | Add `Provisioner` property; update `ConnectionStringExpression`                   |
-| `GlitchTipBuilderExtensions.cs`                          | Remove `ResourceReadyEvent`; add provisioner resource + log watcher               |
-| `GlitchTipProvisioner.cs`                                | Return `(string dsnKey, string projectId)` instead of setting properties directly |
-| `GlitchTipProvisionerResource.cs`                        | New file                                                                          |
-| `GlitchTipProvisionerContainerImageTags.cs`              | New file                                                                          |
-| `GlitchTipConnectionStringReference.cs`                  | New file (or inline as nested class on `GlitchTipResource`)                       |
-| `CommunityToolkit.Aspire.Hosting.GlitchTip.Provisioner/` | New console app project                                                           |
-| `examples/.../Program.cs`                                | `WaitFor(glitchtip)` → `WaitForCompletion(glitchtip.Resource.Provisioner)`        |
-| Tests                                                    | Update call sites                                                                 |
-| `api/CommunityToolkit.Aspire.Hosting.GlitchTip.cs`       | Regenerate GenAPI baseline                                                        |
+| File | Change |
+| --- | --- |
+| `GlitchTipResource.cs` | Internal `DsnKeyParameter`/`ProjectIdParameter`; branch `ConnectionStringExpression` |
+| `GlitchTipBuilderExtensions.cs` | Publish-mode parameters; optional `WithDeployTimeProvisioning()` wiring (step factory + guarded ordering) |
+| `GlitchTipProvisioner.cs` | Extract `(dsnKey, projectId)` core overload; keep run-mode wrapper |
+| `GlitchTipDeployStep.cs` | New — readiness poll, HTTP provisioning, deployment-state save |
+| `CommunityToolkit.Aspire.GlitchTip` | Key-less DSN → disabled Sentry |
+| `README.md` | Deploy docs: parameter contract, manual flow, optional auto-provisioning, two-deploy convergence note |
+| Tests | Connection-string branching, parameter round-trip, step guards/idempotency, client DSN guard |
+| `api/*.cs` GenAPI baselines | Regenerate if `WithDeployTimeProvisioning()` is added (other additions are internal) |
 
 ---
 
-## Open questions
+## Resolved decisions (as implemented)
 
-1. **Provisioner image publishing**: Where and when is the provisioner image built and pushed? Does it need to be pre-published (like `glitchtip/glitchtip:6`) or built during `aspire publish` (like EF migration bundles)?
-2. **`WaitForCompletion` in `WithRedis`/`WithPostgres`**: Should these extension methods internally also wire `WaitFor(provisioner)` on the GlitchTip server, or is the existing `WaitFor(database)` / `WaitFor(redis)` sufficient?
-3. **Error propagation**: If the provisioner exits non-zero, `WaitForCompletion(exitCode: 0)` causes the dependent service to fail to start. Should `DsnTcs` be faulted so `ConnectionStringExpression.GetValueAsync` throws a descriptive error instead of hanging?
-
+1. **Endpoint exposure**: `WithDeployTimeProvisioning()` marks the http endpoint external (it needs the published port for automatic URL resolution, and operators need the UI). Option A leaves exposure to the user.
+2. **Opt-in**: option B ships as `WithDeployTimeProvisioning()`, a no-op in run mode. Option A users never pay the polling timeout.
+3. **Ordering**: only `docker-compose-up-{env}` gets a guarded `DependsOn` edge; no `helm-deploy-{env}` name guessing. Non-compose targets rely on the step's readiness polling and must set `{name}-provision-url`.
+4. **Endpoint auto-resolution** (compose): the step reads `ProjectName`/`OutputPath` from the `DockerCompose:{env}` state section and queries `IContainerRuntime.ComposeListServicesAsync` for the published port of the GlitchTip service — the same primitive Aspire's own `PrintEndpointsAsync` uses — yielding `http://localhost:{publishedPort}` with `{name}-provision-url` as the override.

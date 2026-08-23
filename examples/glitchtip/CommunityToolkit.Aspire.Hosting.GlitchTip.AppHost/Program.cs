@@ -2,6 +2,8 @@ using Projects;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
+var docker = builder.AddDockerComposeEnvironment("env");
+
 var postgres = builder.AddPostgres("postgres")
     .AddDatabase("glitchtip-db");
 
