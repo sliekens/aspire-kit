@@ -216,6 +216,11 @@ internal sealed class BitwardenSecretManagerProvisioner(
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(logger);
 
+        if (resource.InputSecrets.Count == 0)
+        {
+            return;
+        }
+
         logger.LogDebug("Starting upstream managed secret value sync for resource '{ResourceName}'.", resource.Name);
 
         Guid projectId = resource.ProjectId ?? throw new DistributedApplicationException($"Bitwarden resource '{resource.Name}' has not resolved a project identifier.");
@@ -234,7 +239,7 @@ internal sealed class BitwardenSecretManagerProvisioner(
         BitwardenLookupContext lookupContext = new(provider, organizationId, logger);
         int syncedCount = 0;
 
-        foreach (BitwardenSecretResource secret in resource.ManagedSecrets)
+        foreach (BitwardenSecretResource secret in resource.InputSecrets)
         {
             if (secret.TryGetCurrentValue(out _))
             {
@@ -322,15 +327,24 @@ internal sealed class BitwardenSecretManagerProvisioner(
         ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(logger);
 
+        foreach (BitwardenSecretResource reference in resource.ReferenceSecrets)
+        {
+            await ((BitwardenReferenceValueProvider)reference.ValueProvider).PrepareInputAsync(reference, cancellationToken).ConfigureAwait(false);
+        }
+        foreach (BitwardenSecretResource reference in resource.UnmanagedSecrets)
+        {
+            await reference.SetValueAsync(null, cancellationToken).ConfigureAwait(false);
+        }
+
         logger.LogDebug("Starting pre-sync for managed secrets of resource '{ResourceName}'.", resource.Name);
 
-        if (!resource.ManagedSecrets.Any())
+        if (resource.InputSecrets.Count == 0)
         {
-            logger.LogDebug("No managed secrets declared for resource '{ResourceName}'; skipping pre-sync.", resource.Name);
+            logger.LogDebug("No parameter-backed managed secrets declared for resource '{ResourceName}'; skipping pre-sync.", resource.Name);
             return;
         }
 
-        foreach (BitwardenSecretResource secret in resource.ManagedSecrets.Where(secret => secret.DeploymentPrefill is not null))
+        foreach (BitwardenSecretResource secret in resource.InputSecrets.Where(secret => secret.DeploymentPrefill is not null))
         {
             if (secret.AppliedDeploymentPrefill is { } previousValue &&
                 secret.TryGetCurrentValue(out string? currentValue) && currentValue == previousValue)
@@ -566,7 +580,7 @@ internal sealed class BitwardenSecretManagerProvisioner(
             int preResolvedCount = 0;
             logger.LogDebug("Pre-syncing {ManagedSecretCount} managed secret(s) for resource '{ResourceName}'.", resource.ManagedSecrets.Count(), resource.Name);
 
-            foreach (BitwardenSecretResource secret in resource.ManagedSecrets)
+            foreach (BitwardenSecretResource secret in resource.InputSecrets)
             {
                 // ConfigurationKey is internal to Aspire.Hosting; replicate it — managed secrets are never connection strings.
                 string configKey = $"Parameters:{secret.Name}";
@@ -664,6 +678,8 @@ internal sealed class BitwardenSecretManagerProvisioner(
             foreach (BitwardenSecretResource secret in resource.ManagedSecrets)
             {
                 logger.LogDebug("Processing managed secret '{RemoteName}'.", secret.RemoteName);
+                await secret.ValueProvider.PrepareForWriteAsync(secret,
+                    new ValueProviderContext { ExecutionContext = services.GetService<DistributedApplicationExecutionContext>(), Caller = resource }, cancellationToken).ConfigureAwait(false);
                 await ReconcileManagedSecretAsync(resource, organizationId, secret, cacheContext.Cache, lookupContext, provider, interactionService, logger, staleManagedMappings, cancellationToken).ConfigureAwait(false);
             }
 

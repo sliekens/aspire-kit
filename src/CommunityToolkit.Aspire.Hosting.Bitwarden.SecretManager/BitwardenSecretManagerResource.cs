@@ -18,6 +18,8 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
 
     private readonly BitwardenProjectIdReference _projectIdReference;
     private readonly List<BitwardenSecretResource> _secrets = [];
+    internal List<BitwardenSecretResource> InputSecrets { get; } = [];
+    internal List<BitwardenSecretResource> ReferenceSecrets { get; } = [];
     private readonly Dictionary<Guid, string> _resolvedSecretValues = [];
     private readonly Dictionary<string, Guid> _resolvedSecretIdsByRemoteName = new(StringComparer.OrdinalIgnoreCase);
 
@@ -262,6 +264,10 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         ProjectId = null;
         ExistingProjectId = null;
         ResolvedRemoteProjectName = null;
+        foreach (BitwardenSecretResource reference in ReferenceSecrets)
+        {
+            await ((BitwardenReferenceValueProvider)reference.ValueProvider).PrepareInputAsync(reference, cancellationToken).ConfigureAwait(false);
+        }
         _resolvedSecretValues.Clear();
         _resolvedSecretIdsByRemoteName.Clear();
 
@@ -297,6 +303,7 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         if (!_secrets.Contains(secret))
         {
             _secrets.Add(secret);
+            secret.ValueProvider.Register(this, secret);
         }
     }
 

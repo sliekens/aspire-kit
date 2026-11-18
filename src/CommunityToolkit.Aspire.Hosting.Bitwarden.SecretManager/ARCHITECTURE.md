@@ -4,7 +4,7 @@ Bitwarden Secrets Manager is modeled as a declared AppHost resource graph.
 The graph is the primary contract. Deployment happens through explicit Aspire pipeline steps that materialize the declared graph in Bitwarden.
 
 - `BitwardenSecretManagerResource` declares a Bitwarden project and its configuration.
-- `BitwardenSecretResource` declares either a managed secret (created or updated on every run, `IsManaged = true`) or a reference-only secret (read from an existing Bitwarden secret, `IsManaged = false`). Both modes inherit `ParameterResource` and are returned by `AddSecret` and `GetSecret` respectively as `IResourceBuilder<BitwardenSecretResource>`. `AddSecret` has two overloads: a single-name form where the Aspire resource name and the Bitwarden secret name are the same, and a two-name form (`name`, `remoteName`) where they differ. `GetSecret` has three: those same two name-based forms, plus a GUID form (`name`, `secretId`) that locates a specific secret by its Bitwarden identifier. The GUID form is an escape hatch for when multiple secrets in the project share the same name — Bitwarden does not enforce remote name uniqueness. To inject the resolved secret value into a dependent resource, pass the secret builder directly to `WithEnvironment`. To inject the secret ID instead, call `.AsSecretId()` on the builder and pass the result to `WithEnvironment`.
+- `BitwardenSecretResource` declares either a managed secret (created or updated on every run, `IsManaged = true`) or a reference-only secret (read from an existing Bitwarden secret, `IsManaged = false`). Both modes inherit `ParameterResource` and are returned by `AddSecret` and `GetSecret` respectively as `IResourceBuilder<BitwardenSecretResource>`. `AddSecret` accepts an ordinary parameter input or a resource expression. Each form can use a distinct Bitwarden secret name. `GetSecret` accepts a shared name, distinct resource and Bitwarden names, or a Bitwarden secret ID. The GUID form is an escape hatch for when multiple secrets in the project share the same name — Bitwarden does not enforce remote name uniqueness. To inject the resolved secret value into a dependent resource, pass the secret builder directly to `WithEnvironment`. To inject the secret ID instead, call `.AsSecretId()` on the builder and pass the result to `WithEnvironment`.
 - Dependent resources must call `.WaitForCompletion(bitwarden)` explicitly to block until provisioning completes.
 
 This design intentionally treats custom publish-manifest schema as legacy. The integration does not rely on a bespoke manifest payload as its architectural center.
@@ -68,7 +68,7 @@ The resource reports the following states during a run:
 | ---------------------- | ------- | ---------------------------------------------------------------- |
 | `NotStarted`           | —       | Resource registered, initialization not yet started              |
 | `Waiting`              | —       | Waiting for one or more parameter values (see phases below)      |
-| `Running`              | —       | All values collected; actively provisioning project and secrets  |
+| `Running`              | —       | Managed secrets have been provisioned                           |
 | `Finished`             | Success | Provisioning succeeded; dependent resources may start            |
 | `Exited` (exit code 1) | Error   | Authentication or provisioning failed; dependent resources error |
 
@@ -90,13 +90,13 @@ When interaction is unavailable, Aspire can fault a missing required parameter. 
 The provisioner fetches each reference-only secret and assigns the value to its optional parameter. A missing remote secret fails provisioning.
 
 **Phase 3 — remaining parameters.**
-After upstream sync, the resource waits for any remaining project, organization, or managed secret parameter values. Aspire prompts for any managed secret that still needs a value. Once every value is available, the resource transitions to `Running` and provisioning continues.
+After upstream sync, the resource waits for the remaining project, organization, and ordinary managed inputs. Aspire prompts for ordinary managed secrets that still need a value. The resource then prepares and writes the managed secrets before it reports `Running`.
 
 The writer reads the current parameter value before it reconciles each managed secret. A later edit stays in the parameter and is available for the next reconciliation. The writer records the remote identity and value after the write without assigning its earlier snapshot back to the managed parameter.
 
 ### Sync command
 
-The "Reprovision" command repeats the full initialization sequence on demand. It is available in any state except `NotStarted`. Because parameter values are typically already resolved from the initial run, the resource moves through `Waiting` quickly before re-entering `Running`.
+The "Reprovision" command repeats the initialization sequence, including a fresh read of deferred sources without overrides. It is available in any state except `NotStarted`.
 
 ### BitwardenSecretResource as ParameterResource
 
@@ -104,9 +104,17 @@ The "Reprovision" command repeats the full initialization sequence on demand. It
 
 **`GetSecret` deduplication.** When `GetSecret` is called with a remote name that matches an existing secret (managed or previously registered reference-only), the same `BitwardenSecretResource` is returned — no second resource is created. The match is on `RemoteName`, so `AddSecret("app-key", "shared-secret")` followed by `GetSecret("shared-secret")` yields the same resource. This allows different parts of the AppHost to declare the write path and the read path independently without registering duplicates. `GetSecret(name, secretId)` bypasses this deduplication: it matches by `ExistingSecretId` instead, so it always produces a distinct resource even when another secret with the same remote name is already registered. Use this form when Bitwarden contains multiple secrets with the same name in the same project — Bitwarden does not enforce remote name uniqueness, so genuine duplicates can exist.
 
-**Dashboard visibility.** Both kinds use `ResourceType = "Parameter"` in their initial snapshot so they appear in the Aspire dashboard parameters tab. For managed secrets, the `Source` property shows the configuration key (`Parameters:{resourceName}`) where a value can be pre-supplied. For reference-only secrets, the `Source` shows `Bitwarden: {remoteName}` (the Bitwarden secret name) to signal that the value comes exclusively from Bitwarden.
+**Dashboard visibility.** Both kinds appear in the Aspire dashboard parameters tab. For managed secrets, the `Source` property shows the parameter expression or the supplied resource expression. For reference-only secrets, the source identifies the Bitwarden secret by name or ID.
 
 **Parameter processing.** Managed secrets use configuration, defaults, values assigned in code, and normal Aspire prompts. Bitwarden supplies a fallback when the parameter has no local input. Reference-only secrets are optional during parameter processing and receive their values from Bitwarden. The resource and both `IValueProvider.GetValueAsync` overloads read the same parameter state. The resolved-secret cache supplies identity and remote values for deployment bookkeeping.
+
+### Values supplied by resource outputs
+
+`AddSecret(name, expression)` declares an optional managed parameter. Before reconciliation writes the secret, its provider reads the configured override or evaluates the expression. It assigns the result or the error to inherited parameter state. Both managed forms use the same writer.
+
+The source expression exposes its resource references. In deployment, the integration that produces the value must order its step before `bitwarden-provision-secrets-{name}`. The expression evaluates in a `ValueProviderContext` whose caller is the Bitwarden resource.
+
+Before each parameter-processing pass, the integration clears previous generated and remote values and restores explicit overrides. This keeps generated values out of Aspire's saved inputs. The artifact-only `publish` and `build` targets do not authenticate to Bitwarden or evaluate expressions.
 
 ## Deploy-mode parameter suppression
 
