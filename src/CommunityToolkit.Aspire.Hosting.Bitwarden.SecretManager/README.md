@@ -82,7 +82,28 @@ The value is resolved in this order during startup:
 3. **Interactive input** — provide a value in the dashboard when neither source supplies it. Aspire can show the prompt while Bitwarden is still checking for a remote value. If you submit a value during the lookup, Bitwarden uses your input.
 
 In a headless run, an existing Bitwarden value can satisfy a missing parameter. If the secret is missing locally and remotely, supply an explicit parameter value. Deployments keep remote fallback values in memory for the current operation.
+
 Aspire finds or creates the secret entirely by name and cached ID. There is no explicit GUID adoption for managed secrets — if the same secret was created in a previous run it will be found automatically.
+
+### Values supplied by another resource
+
+Pass a `ReferenceExpression` to use a resource output as a managed secret:
+
+```csharp
+var connection = bitwarden.AddSecret(
+    "database-connection",
+    database.Resource.ConnectionStringExpression,
+    remoteName: "Database connection");
+```
+
+An explicit `Parameters:{parentName}-{name}` value overrides the expression. In this example, the key is `Parameters:bitwarden-database-connection`.
+Without an override, each reconciliation reads a fresh value. If the source fails, is canceled, or produces an empty value, the operation fails before it writes the secret.
+
+Expression-backed secrets skip parameter prompts and remote prefill. Their source stays deferred during model construction and artifact-only publish. In deployment, order the producer before `bitwarden-provision-secrets-{parentName}`. In local runs, use `WaitForCompletion(bitwarden)` before starting consumers.
+
+The expression resolves in the Bitwarden resource's context. All consumers receive the resulting value. Use direct resource references when host and container consumers need different endpoint addresses.
+
+Generated values stay in memory. Explicit overrides can persist as ordinary inputs. Remove both the configured override and any saved input to resume reading from the expression.
 
 ## Externally managed secrets
 

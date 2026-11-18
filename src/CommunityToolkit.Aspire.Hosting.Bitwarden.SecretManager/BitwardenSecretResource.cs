@@ -1,5 +1,7 @@
 #pragma warning disable ASPIREATS001
 
+using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager;
+
 namespace Aspire.Hosting.ApplicationModel;
 
 /// <summary>
@@ -16,48 +18,43 @@ public class BitwardenSecretResource : ParameterResource, IResourceWithParent<Bi
     /// <param name="parent">The owning Bitwarden resource.</param>
     /// <param name="valueGetter">Callback that resolves the secret's value from configuration.</param>
     public BitwardenSecretResource(string name, string remoteName, BitwardenSecretManagerResource parent, Func<ParameterDefault?, string> valueGetter)
-        : base(name, valueGetter, secret: true)
+        : this(name, remoteName, parent, new BitwardenInputValueProvider(valueGetter), isManaged: true)
+    {
+        ArgumentNullException.ThrowIfNull(valueGetter);
+    }
+
+    private BitwardenSecretResource(string name, string remoteName, BitwardenSecretManagerResource parent, BitwardenSecretValueProvider valueProvider, bool isManaged)
+        : base(name, parameterDefault => valueProvider.GetInitialValue(parameterDefault)!, secret: true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
         ArgumentException.ThrowIfNullOrWhiteSpace(remoteName);
         ArgumentNullException.ThrowIfNull(parent);
-        ArgumentNullException.ThrowIfNull(valueGetter);
-
         RemoteName = remoteName;
         Parent = parent;
-        IsManaged = true;
+        IsManaged = isManaged;
+        ValueProvider = valueProvider;
     }
-
     /// <summary>
     /// Initializes a new instance of the <see cref="BitwardenSecretResource"/> class for an unmanaged (reference-only) secret by remote name.
     /// </summary>
     internal BitwardenSecretResource(string name, string remoteName, BitwardenSecretManagerResource parent)
-        : base(name, _ => null!, secret: true)
+        : this(name, remoteName, parent, new BitwardenRemoteValueProvider(), isManaged: false)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(remoteName);
-        ArgumentNullException.ThrowIfNull(parent);
-
-        RemoteName = remoteName;
-        Parent = parent;
-        IsManaged = false;
     }
-
     /// <summary>
     /// Initializes a new instance of the <see cref="BitwardenSecretResource"/> class for an unmanaged (reference-only) secret by secret identifier.
     /// </summary>
     internal BitwardenSecretResource(string name, Guid secretId, BitwardenSecretManagerResource parent)
-        : base(name, _ => null!, secret: true)
+        : this(name, name, parent)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentNullException.ThrowIfNull(parent);
-
-        RemoteName = name; // placeholder; actual name resolved from Bitwarden
-        Parent = parent;
         ExistingSecretId = secretId;
-        IsManaged = false;
     }
 
+    internal BitwardenSecretResource(string name, string remoteName, BitwardenSecretManagerResource parent, ReferenceExpression value, Func<string?>? configuredValue = null)
+        : this(name, remoteName, parent, new BitwardenReferenceValueProvider(value, configuredValue ?? (() => null)), isManaged: true)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+    }
     /// <summary>
     /// Gets a value indicating whether this resource is a managed secret (owned and written by Aspire)
     /// as opposed to a reference-only secret (read from an existing Bitwarden secret).
@@ -79,6 +76,8 @@ public class BitwardenSecretResource : ParameterResource, IResourceWithParent<Bi
     /// </summary>
     public BitwardenSecretManagerResource Parent { get; }
 
+    internal BitwardenSecretValueProvider ValueProvider { get; }
+
     internal Guid? ExistingSecretId { get; }
     internal (Guid Id, Guid ProjectId)? DeploymentPrefill { get; set; }
     internal string? AppliedDeploymentPrefill { get; set; }
@@ -88,9 +87,10 @@ public class BitwardenSecretResource : ParameterResource, IResourceWithParent<Bi
     /// </summary>
     public Guid? ResolvedSecretId => SecretId ?? ExistingSecretId;
 
-    IEnumerable<object> IValueWithReferences.References => [Parent, this];
+    IEnumerable<object> IValueWithReferences.References => [Parent, this, .. ValueProvider.References];
 
     string IManifestExpressionProvider.ValueExpression => SecretId is Guid secretId
         ? $"{{{Parent.Name}.secrets.{secretId:D}}}"
         : $"{{{Parent.Name}.secrets.{RemoteName}}}";
+
 }
