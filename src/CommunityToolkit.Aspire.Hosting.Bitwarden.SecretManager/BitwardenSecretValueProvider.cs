@@ -1,6 +1,5 @@
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
-using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.Extensions;
 
 namespace CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager;
 
@@ -34,14 +33,14 @@ internal sealed class BitwardenReferenceValueProvider(ReferenceExpression source
     internal override void Register(BitwardenSecretManagerResource parent, BitwardenSecretResource secret) => parent.ReferenceSecrets.Add(secret);
 
     // Run before process-parameters. Never mistake the last generated result for an input override.
-    internal void PrepareInput(BitwardenSecretResource secret) => secret.SetParameterValue(configuredValue());
+    internal Task PrepareInputAsync(BitwardenSecretResource secret, CancellationToken cancellationToken) =>
+        secret.SetValueAsync(configuredValue(), cancellationToken);
 
     internal override async Task PrepareForWriteAsync(BitwardenSecretResource secret, ValueProviderContext context, CancellationToken cancellationToken)
     {
-        secret.InitializeWaitForValue();
         try
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            await secret.SetValueAsync(null, cancellationToken).ConfigureAwait(false);
             string? value = configuredValue();
             if (string.IsNullOrEmpty(value))
             {
@@ -52,11 +51,11 @@ internal sealed class BitwardenReferenceValueProvider(ReferenceExpression source
                 throw new DistributedApplicationException($"Managed Bitwarden secret '{secret.RemoteName}' did not resolve to a value.");
             }
             cancellationToken.ThrowIfCancellationRequested();
-            secret.SetParameterValue(value);
+            await secret.SetValueAsync(value, cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
-            secret.SetParameterException(ex);
+            await secret.SetExceptionAsync(ex, CancellationToken.None).ConfigureAwait(false);
             throw;
         }
     }

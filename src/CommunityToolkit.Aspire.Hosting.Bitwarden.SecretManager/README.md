@@ -112,12 +112,9 @@ Explicit overrides can persist as ordinary inputs. Remove the saved input too wh
 
 ### Aspire compatibility
 
-The current implementation uses Aspire internals to update inherited parameter state.
-[Aspire PR 18108](https://github.com/microsoft/aspire/pull/18108) is a prerequisite for a clean implementation with public setters and optional parameters.
-See [ASPIRE-INTERNALS.md](ASPIRE-INTERNALS.md) for the compatibility boundary and replacement plan.
+Reference-backed secrets use optional parameters in Aspire 17. Without an explicit override,
+the parameter has no value until the source resolves. A failed source stops the managed write.
 
-Aspire 13.5 temporarily represents an absent processed parameter as an empty string. Dependent operations must wait for value preparation.
-The writer rejects an absent computed value. Do not use the temporary empty value as application configuration.
 ## Externally managed secrets
 
 Use `GetSecret(...)` to reference a secret that already exists in Bitwarden and is owned outside the AppHost. Aspire reads the value but never writes to it.
@@ -390,6 +387,4 @@ Each entry lists all fields that changed and their previous values. The trail is
 
 ## Compatibility
 
-Tested with **Aspire 13.3.0**.
-
-This integration relies on several experimental Aspire APIs (`ASPIREATS001`, `ASPIREPIPELINES001/002/004`, `ASPIREINTERACTION001`) and four `UnsafeAccessor` workarounds against private members of `ParameterResource` and `ParameterProcessor`. See [ASPIRE-INTERNALS.md](ASPIRE-INTERNALS.md) for the full explanation of each one, why no public API covers it, and what breaks when Aspire changes it.
+The integration uses the Aspire 17 parameter APIs to set resolved values and report failures.

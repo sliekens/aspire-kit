@@ -68,14 +68,13 @@ Do not call parameter processing again between reference preparation and the man
 The provider reads explicit configuration separately from current parameter state. A previous computed result is not an override.
 Removing an override can require removing its saved deployment input as well as its active configuration setting.
 
-## Compatibility boundary
+## Parameter lifecycle
 
-`Extensions/ParameterResourceExtensions.cs` contains the Aspire internal accessors.
-[Aspire PR 18108](https://github.com/microsoft/aspire/pull/18108) is a prerequisite for replacing them with a clean public-API implementation.
-See [ASPIRE-INTERNALS.md](ASPIRE-INTERNALS.md).
+Reference-backed and remote secrets are optional during parameter processing. Managed parameter
+inputs still require a value. Provider results update inherited parameter state through the
+public Aspire value and exception setters. Aspire observes those changes for the dashboard.
 
-On Aspire 13.5, processing an absent parameter produces an empty string. The integration relies on readiness and pipeline order until preparation finishes.
-The inherited parameter and interface getters always agree. No separate expression getter bypasses the parameter.
+The inherited parameter and interface getters read the same value.
 
 ## Validation
 

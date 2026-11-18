@@ -890,7 +890,9 @@ public static class BitwardenSecretManagerExtensions
 
         builder.WithReferenceRelationship(secret);
 
-        return builder.ApplicationBuilder.AddResource(secret)
+        var secretBuilder = builder.ApplicationBuilder.AddResource(secret);
+        secretBuilder.AsOptional();
+        return secretBuilder
             .WithParentRelationship(builder)
             .WithIconName("LockClosed")
             .WithInitialState(new CustomResourceSnapshot
@@ -921,7 +923,9 @@ public static class BitwardenSecretManagerExtensions
 
         builder.WithReferenceRelationship(secret);
 
-        return builder.ApplicationBuilder.AddResource(secret)
+        var secretBuilder = builder.ApplicationBuilder.AddResource(secret);
+        secretBuilder.AsOptional();
+        return secretBuilder
             .WithParentRelationship(builder)
             .WithIconName("LockClosed")
             .WithInitialState(new CustomResourceSnapshot
@@ -959,7 +963,13 @@ public static class BitwardenSecretManagerExtensions
         builder.Resource.RegisterSecret(secret);
         builder.WithReferenceRelationship(secret);
 
-        return builder.ApplicationBuilder.AddResource(secret)
+        var secretBuilder = builder.ApplicationBuilder.AddResource(secret);
+        if (valueSource is not null)
+        {
+            secretBuilder.AsOptional();
+        }
+
+        return secretBuilder
             .WithParentRelationship(builder)
             .WithIconName("LockClosed")
             .WithInitialState(new CustomResourceSnapshot

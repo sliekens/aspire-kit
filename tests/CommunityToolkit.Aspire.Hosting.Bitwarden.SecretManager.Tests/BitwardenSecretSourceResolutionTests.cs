@@ -1,10 +1,12 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+#pragma warning disable ASPIREINTERACTION001
+
 using Aspire.Hosting;
 using Aspire.Hosting.Publishing;
 using Aspire.Hosting.Utils;
-using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.Extensions;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.Tests;
 
@@ -27,13 +29,12 @@ public class BitwardenSecretSourceResolutionTests
         Assert.Equal(4, builder.Resources.OfType<ParameterResource>().Count());
         Assert.Equal("configured-input", await ReadAsync(secret, withContext));
 
-        secret.InitializeWaitForValue();
-        secret.ResolveWaitForValue("prompted-input");
+        await secret.SetValueAsync("prompted-input");
         Assert.Equal("prompted-input", await ReadAsync(secret, withContext));
 
-        manager.Resource.BindResolvedSecret(Guid.NewGuid(), secret.RemoteName, "bound-value");
+        await manager.Resource.BindResolvedSecretAsync(Guid.NewGuid(), secret.RemoteName, "bound-value", default);
         Assert.Equal("prompted-input", await ReadAsync(secret, withContext));
-        manager.Resource.ResetResolvedValues();
+        await manager.Resource.ResetResolvedValuesAsync(default);
         Assert.Equal("prompted-input", await ReadAsync(secret, withContext));
     }
 
@@ -54,8 +55,11 @@ public class BitwardenSecretSourceResolutionTests
     public async Task ParameterExpressionWaitsForPromptAndCancellationDoesNotLoseTheInput(bool withContext)
     {
         using var builder = TestDistributedApplicationBuilder.Create(DistributedApplicationOperation.Publish);
+        builder.Services.AddSingleton<IInteractionService>(new FakeInteractionService(canceled: true));
         var secret = AddManager(builder).AddSecret("input").Resource;
-        secret.InitializeWaitForValue();
+        using var app = builder.Build();
+        var processor = app.Services.GetRequiredService<ParameterProcessor>();
+        await processor.InitializeParametersAsync([secret]);
         using var cancellation = new CancellationTokenSource();
 
         var pending = ReadAsync(secret, withContext, cancellation.Token);
@@ -63,7 +67,7 @@ public class BitwardenSecretSourceResolutionTests
         cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
 
-        secret.ResolveWaitForValue("prompted-input");
+        await secret.SetValueAsync("prompted-input");
         Assert.Equal("prompted-input", await ReadAsync(secret, withContext));
     }
 
@@ -84,11 +88,11 @@ public class BitwardenSecretSourceResolutionTests
         Assert.DoesNotContain(secret, manager.Resource.InputSecrets);
         Assert.False(secret.IsManaged);
         Assert.Null(await ReadAsync(secret, withContext));
-        manager.Resource.BindResolvedSecret(id, byId ? "name-from-server" : secret.RemoteName, string.Empty);
+        await manager.Resource.BindResolvedSecretAsync(id, byId ? "name-from-server" : secret.RemoteName, string.Empty, default);
         Assert.Equal(string.Empty, await ReadAsync(secret, withContext));
-        manager.Resource.BindResolvedSecret(id, byId ? "name-from-server" : secret.RemoteName, "remote-value");
+        await manager.Resource.BindResolvedSecretAsync(id, byId ? "name-from-server" : secret.RemoteName, "remote-value", default);
         Assert.Equal("remote-value", await ReadAsync(secret, withContext));
-        manager.Resource.ResetResolvedValues();
+        await manager.Resource.ResetResolvedValuesAsync(default);
         Assert.Null(await ReadAsync(secret, withContext));
     }
 

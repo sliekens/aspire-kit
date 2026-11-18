@@ -1,7 +1,7 @@
 #pragma warning disable ASPIREATS001
 #pragma warning disable ASPIREINTERACTION001
 
-using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.Extensions;
+using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Aspire.Hosting.ApplicationModel;
@@ -136,10 +136,10 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        if (!ConfiguredOrganizationIdParameter.HasValue())
+        if (!HasUsableValue(ConfiguredOrganizationIdParameter))
         {
             ThrowIfNonInteractive(services, ConfiguredOrganizationIdParameter.Name);
-            await ConfiguredOrganizationIdParameter.PromptAsync(services, cancellationToken).ConfigureAwait(false);
+            await services.GetRequiredService<ParameterProcessor>().SetParameterAsync(ConfiguredOrganizationIdParameter, cancellationToken).ConfigureAwait(false);
         }
 
         string? value = await ConfiguredOrganizationIdParameter.GetValueAsync(cancellationToken).ConfigureAwait(false);
@@ -154,10 +154,10 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
 
     internal async Task<string> GetResolvedManagementAccessTokenAsync(IServiceProvider services, CancellationToken cancellationToken)
     {
-        if (!ManagementAccessToken.HasValue())
+        if (!HasUsableValue(ManagementAccessToken))
         {
             ThrowIfNonInteractive(services, ManagementAccessToken.Name);
-            await ManagementAccessToken.PromptAsync(services, cancellationToken).ConfigureAwait(false);
+            await services.GetRequiredService<ParameterProcessor>().SetParameterAsync(ManagementAccessToken, cancellationToken).ConfigureAwait(false);
         }
 
         string? accessToken = await ManagementAccessToken.GetValueAsync(cancellationToken).ConfigureAwait(false);
@@ -178,10 +178,10 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         IServiceProvider services,
         CancellationToken cancellationToken)
     {
-        if (!ConfiguredProjectNameOrIdParameter.HasValue())
+        if (!HasUsableValue(ConfiguredProjectNameOrIdParameter))
         {
             ThrowIfNonInteractive(services, ConfiguredProjectNameOrIdParameter.Name);
-            await ConfiguredProjectNameOrIdParameter.PromptAsync(services, cancellationToken).ConfigureAwait(false);
+            await services.GetRequiredService<ParameterProcessor>().SetParameterAsync(ConfiguredProjectNameOrIdParameter, cancellationToken).ConfigureAwait(false);
         }
 
         string? value = await ConfiguredProjectNameOrIdParameter.GetValueAsync(cancellationToken).ConfigureAwait(false);
@@ -245,6 +245,9 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         environmentVariables[$"{ConfigurationKeyPrefix}__{connectionName}__IdentityUrl"] = GetIdentityUrlOrDefault();
     }
 
+    private static bool HasUsableValue(ParameterResource parameter) =>
+        parameter.TryGetCurrentValue(out string? value) && !string.IsNullOrWhiteSpace(value);
+
     private void ThrowIfNonInteractive(IServiceProvider services, string parameterName)
     {
         var interactionService = services.GetService<IInteractionService>();
@@ -256,14 +259,14 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         }
     }
 
-    internal void ResetResolvedValues()
+    internal async Task ResetResolvedValuesAsync(CancellationToken cancellationToken)
     {
         ProjectId = null;
         ExistingProjectId = null;
         ResolvedRemoteProjectName = null;
         foreach (BitwardenSecretResource reference in ReferenceSecrets)
         {
-            ((CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.BitwardenReferenceValueProvider)reference.ValueProvider).PrepareInput(reference);
+            await ((BitwardenReferenceValueProvider)reference.ValueProvider).PrepareInputAsync(reference, cancellationToken).ConfigureAwait(false);
         }
         _resolvedSecretValues.Clear();
         _resolvedSecretIdsByRemoteName.Clear();
@@ -273,7 +276,7 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
             secret.SecretId = null;
             if (!secret.IsManaged)
             {
-                secret.SetParameterValue(null);
+                await secret.SetValueAsync(null, cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -283,14 +286,14 @@ public class BitwardenSecretManagerResource : Resource, IResourceWithWaitSupport
         ProjectId = projectId;
     }
 
-    internal void BindResolvedSecret(Guid secretId, string remoteName, string value)
+    internal async Task BindResolvedSecretAsync(Guid secretId, string remoteName, string value, CancellationToken cancellationToken)
     {
         _resolvedSecretValues[secretId] = value;
         _resolvedSecretIdsByRemoteName[remoteName] = secretId;
         foreach (BitwardenSecretResource reference in UnmanagedSecrets.Where(secret =>
             secret.ResolvedSecretId == secretId || (secret.ExistingSecretId is null && string.Equals(secret.RemoteName, remoteName, StringComparison.OrdinalIgnoreCase))))
         {
-            reference.SetParameterValue(value);
+            await reference.SetValueAsync(value, cancellationToken).ConfigureAwait(false);
         }
     }
 

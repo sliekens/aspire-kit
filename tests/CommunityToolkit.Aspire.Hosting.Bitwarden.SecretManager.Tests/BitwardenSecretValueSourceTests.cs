@@ -6,7 +6,6 @@
 using Aspire.Hosting;
 using Aspire.Hosting.Pipelines;
 using Aspire.Hosting.Utils;
-using CommunityToolkit.Aspire.Hosting.Bitwarden.SecretManager.Extensions;
 using CommunityToolkit.Aspire.Testing;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -48,9 +47,8 @@ public class BitwardenSecretValueSourceTests
         var bitwarden = AddManager(builder);
         var source = new MutableValueSource { Value = "fresh-output" };
         var secret = bitwarden.AddSecret("output", ReferenceExpression.Create($"{source}"));
-        secret.Resource.InitializeWaitForValue();
-        secret.Resource.ResolveWaitForValue("old-parameter");
-        bitwarden.Resource.BindResolvedSecret(Guid.NewGuid(), "output", "old-remote-value");
+        await secret.Resource.SetValueAsync("old-parameter");
+        await bitwarden.Resource.BindResolvedSecretAsync(Guid.NewGuid(), "output", "old-remote-value", default);
         var caller = new ContainerResource("consumer");
 
         await secret.Resource.ValueProvider.PrepareForWriteAsync(secret.Resource, new ValueProviderContext { Caller = caller }, default);
@@ -222,7 +220,7 @@ public class BitwardenSecretValueSourceTests
         {
             await fixture.Provisioner.PreSyncManagedSecretValuesAsync(fixture.Bitwarden.Resource, app.Services, NullLogger.Instance, default);
             await processor.InitializeParametersAsync(model, waitForResolution: true);
-            Assert.True(string.IsNullOrEmpty(await secret.Resource.GetValueAsync(default))); // Aspire 13.5 normalizes absent inputs to empty.
+            Assert.Null(await secret.Resource.GetValueAsync(default));
             await fixture.InitializeAsync(app.Services);
             source.Value = $"value-{operation}";
             await fixture.Provisioner.ProvisionSecretsAsync(fixture.Bitwarden.Resource, app.Services, NullLogger.Instance, default);
@@ -278,7 +276,7 @@ public class BitwardenSecretValueSourceTests
         manager.AddSecret("input");
         var source = new MutableValueSource { Failure = new InvalidOperationException("Must remain deferred") };
         var reference = manager.AddSecret("output", ReferenceExpression.Create($"{source}"));
-        reference.Resource.SetParameterValue("previous-generated");
+        await reference.Resource.SetValueAsync("previous-generated");
         using var services = new ServiceCollection().Configure<PipelineOptions>(options => options.Step = WellKnownPipelineSteps.Publish).BuildServiceProvider();
         var provisioner = new BitwardenSecretManagerProvisioner(new UnexpectedProviderFactory());
         await provisioner.PreSyncManagedSecretValuesAsync(manager.Resource, services, NullLogger.Instance, default);
